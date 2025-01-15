@@ -51,7 +51,7 @@ def optimize_random_forest_with_optuna(pro_data, pro_labels, output_dir, disease
 
     os.makedirs(output_dir, exist_ok=True)
 
-    results = []  # 用于保存性能指标结果
+    results = []
 
     print(f"Processing {disease}...")
 
@@ -88,7 +88,6 @@ def optimize_random_forest_with_optuna(pro_data, pro_labels, output_dir, disease
         'Model Path': model_path
     })
 
-    # 保存所有性能指标为 CSV
     results_df = pd.DataFrame(results)
     results_df_path = os.path.join(output_dir, "model_performance.csv")
     results_df.to_csv(results_df_path, index=False)
