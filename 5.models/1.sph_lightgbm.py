@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 def calculate_auc_confidence_interval(y_true, y_pred_proba, confidence_level=0.95):
 
     auc_scores = []
-    n_bootstrap = 100  # 设置 bootstrap 次数
-    rng = np.random.default_rng(seed=42)  # 固定随机种子以确保结果可重复
+    n_bootstrap = 100
+    rng = np.random.default_rng(seed=42)
     for _ in range(n_bootstrap):
         indices = rng.choice(len(y_true), len(y_true), replace=True)
         auc_scores.append(roc_auc_score(y_true[indices], y_pred_proba[indices]))
@@ -40,7 +40,7 @@ def objective(trial, X, y, skf):
         'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
         'lambda_l1': trial.suggest_float('lambda_l1', 0.0, 10.0),
         'lambda_l2': trial.suggest_float('lambda_l2', 0.0, 10.0),
-        'scale_pos_weight': len(y[y == 0]) / len(y[y == 1]),  # 处理类别不平衡
+        'scale_pos_weight': len(y[y == 0]) / len(y[y == 1]),
         'verbose': -1
     }
 
