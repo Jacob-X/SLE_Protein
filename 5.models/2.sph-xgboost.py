@@ -1,6 +1,6 @@
 import xgboost as xgb
 from xgboost import XGBClassifier
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import StratifiedKFold, train_test_split, cross_val_predict
 from sklearn.metrics import roc_auc_score
 import optuna
 import shap
@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 
 
 def calculate_auc_confidence_interval(y_true, y_pred_proba, confidence_level=0.95):
-
     auc_scores = []
     n_bootstrap = 100
     rng = np.random.default_rng(seed=42)
@@ -25,11 +24,12 @@ def calculate_auc_confidence_interval(y_true, y_pred_proba, confidence_level=0.9
     return lower, upper
 
 
-def objective(trial, X, y, skf):
+def objective(trial, X_train, y_train, skf):
+
     param = {
         'objective': 'binary:logistic',
         'eval_metric': 'auc',
-        'use_label_encoder': False,  # 避免警告
+        'use_label_encoder': False,
         'eta': trial.suggest_float('eta', 0.01, 0.2),
         'max_depth': trial.suggest_int('max_depth', 3, 20),
         'min_child_weight': trial.suggest_float('min_child_weight', 1, 10),
@@ -41,20 +41,21 @@ def objective(trial, X, y, skf):
     }
 
     auc_scores = []
-    for train_idx, valid_idx in skf.split(X, y):
-        X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
-        y_train, y_valid = y.iloc[train_idx], y.iloc[valid_idx]
+    for train_idx, valid_idx in skf.split(X_train, y_train):
+        X_fold_train, X_fold_valid = X_train.iloc[train_idx], X_train.iloc[valid_idx]
+        y_fold_train, y_fold_valid = y_train.iloc[train_idx], y_train.iloc[valid_idx]
 
         model = XGBClassifier(**param)
-        model.fit(X_train, y_train)
+        model.fit(X_fold_train, y_fold_train)
 
-        y_pred_proba = model.predict_proba(X_valid)[:, 1]
-        auc_scores.append(roc_auc_score(y_valid, y_pred_proba))
+        y_pred_proba = model.predict_proba(X_fold_valid)[:, 1]
+        auc_scores.append(roc_auc_score(y_fold_valid, y_pred_proba))
 
     return np.mean(auc_scores)
 
 
-def optimize_xgboost_with_optuna(pro_data, pro_labels, output_dir, n_trials=50):
+def optimize_and_train_xgboost(pro_data, pro_labels, output_dir, test_size=0.3, n_trials=50):
+
     os.makedirs(output_dir, exist_ok=True)
 
     results = []
@@ -65,30 +66,44 @@ def optimize_xgboost_with_optuna(pro_data, pro_labels, output_dir, n_trials=50):
         y = pro_labels[disease]
         X = pro_data
 
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, stratify=y, random_state=42)
+
         skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 
         study = optuna.create_study(direction="maximize")
-        study.optimize(lambda trial: objective(trial, X, y, skf), n_trials=n_trials)
+        study.optimize(lambda trial: objective(trial, X_train, y_train, skf), n_trials=n_trials)
 
         print(f"Best parameters for {disease}: {study.best_params}")
-        print(f"Best AUC for {disease}: {study.best_value}")
+        print(f"Best AUC during validation: {study.best_value}")
 
         best_model = XGBClassifier(**study.best_params)
-        best_model.fit(X, y)
+        best_model.fit(X_train, y_train)
 
         model_path = os.path.join(output_dir, f"{disease}_best_xgboost_model.pkl")
         joblib.dump(best_model, model_path)
         print(f"模型保存至: {model_path}")
 
-        y_pred_proba = cross_val_predict(best_model, X, y, cv=skf, method='predict_proba')[:, 1]
-        auc = roc_auc_score(y, y_pred_proba)
+        y_test_proba = best_model.predict_proba(X_test)[:, 1]
+        test_auc = roc_auc_score(y_test, y_test_proba)
+        lower, upper = calculate_auc_confidence_interval(y_test.values, y_test_proba)
+        print(f"{disease} Test AUC: {test_auc:.3f} (95% CI: [{lower:.3f}, {upper:.3f}])")
 
-        lower, upper = calculate_auc_confidence_interval(y.values, y_pred_proba)
-        print(f"{disease} AUC: {auc:.3f} (95% CI: [{lower:.3f}, {upper:.3f}])")
+        explainer = shap.Explainer(best_model, X_train)
+        shap_values = explainer(X_train)
+
+        shap.summary_plot(shap_values, X_train, show=False)
+        shap_plot_path = os.path.join(output_dir, f"{disease}_shap_summary.pdf")
+        plt.savefig(shap_plot_path, format='pdf')
+        plt.close()
+
+        shap_values_df = pd.DataFrame(shap_values.values, columns=X_train.columns)
+        shap_values_df_path = os.path.join(output_dir, f"{disease}_shap_values.csv")
+        shap_values_df.to_csv(shap_values_df_path, index=False)
 
         results.append({
             'Disease': disease,
-            'AUC': auc,
+            'Validation AUC': study.best_value,
+            'Test AUC': test_auc,
             'AUC Lower 95% CI': lower,
             'AUC Upper 95% CI': upper,
             'Best Parameters': study.best_params,
@@ -110,15 +125,10 @@ if __name__ == '__main__':
     pro_data = pro[['trim21', 'il15', 'scarb2', 'lgals9', 'pdcd1', 'sod2', 'mepe', 'lag3', 'cxcl16', 'pomc', 'bst2']]
     pro_labels = pro[["SLE"]]
 
-    optimize_xgboost_with_optuna(pro_data, pro_labels, output_dir="/work/sph-xutx/codes/immune/sle_models/xgboost/result", n_trials=50)
-
-
-# #!/bin/bash
-# set -e
-# module load python/anaconda3/5.2.0
-# export PATH=/work/sph-xutx/.conda/envs/lgb/bin:$PATH
-# export CONDA_PREFIX=/work/sph-xutx/.conda/envs/lgb
-#
-# python /work/sph-xutx/codes/immune/sle_models/xgboost/2.sph-xgboost.py
-
-# bsub -q short -n 40 -J sph-xgboost -o sph-xgboost.LOG -e sph-xgboost.ERR < sph-xgboost.sh
+    optimize_and_train_xgboost(
+        pro_data,
+        pro_labels,
+        output_dir="/work/sph-xutx/codes/immune/sle_models/xgboost/result2",
+        test_size=0.3,
+        n_trials=50
+    )

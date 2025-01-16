@@ -3,13 +3,14 @@ import shap
 import joblib
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import roc_auc_score
 from sklearn.naive_bayes import GaussianNB
 import matplotlib.pyplot as plt
 
 
 def calculate_auc_confidence_interval(y_true, y_pred_proba, confidence_level=0.95):
+
     auc_scores = []
     n_bootstrap = 100
     rng = np.random.default_rng(seed=42)
@@ -22,7 +23,8 @@ def calculate_auc_confidence_interval(y_true, y_pred_proba, confidence_level=0.9
     return lower, upper
 
 
-def train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease):
+def train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease, test_size=0.3):
+
     os.makedirs(output_dir, exist_ok=True)
     results = []
 
@@ -31,17 +33,17 @@ def train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease):
     y = pro_labels[disease]
     X = pro_data
 
-    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, stratify=y, random_state=42)
 
     model = GaussianNB()
 
-    y_pred_proba = cross_val_predict(model, X, y, cv=skf, method='predict_proba')[:, 1]
-    auc = roc_auc_score(y, y_pred_proba)
+    model.fit(X_train, y_train)
 
-    lower, upper = calculate_auc_confidence_interval(y.values, y_pred_proba)
-    print(f"{disease} AUC: {auc}, 95% CI: ({lower}, {upper})")
+    y_test_proba = model.predict_proba(X_test)[:, 1]
+    test_auc = roc_auc_score(y_test, y_test_proba)
 
-    model.fit(X, y)
+    lower, upper = calculate_auc_confidence_interval(y_test.values, y_test_proba)
+    print(f"{disease} Test AUC: {test_auc:.3f}, 95% CI: ({lower:.3f}, {upper:.3f})")
 
     model_path = os.path.join(output_dir, f"{disease}_best_nb_model.pkl")
     joblib.dump(model, model_path)
@@ -49,7 +51,7 @@ def train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease):
 
     results.append({
         'Disease': disease,
-        'AUC': auc,
+        'Test AUC': test_auc,
         'AUC 95% CI Lower': lower,
         'AUC 95% CI Upper': upper,
         'Model Path': model_path
@@ -63,6 +65,7 @@ def train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease):
 
 
 if __name__ == '__main__':
+
     pro = pd.read_csv("/work/sph-xutx/codes/immune/immune_lgb_feature_selection/immune_pro.csv")
     pro = pro.fillna(pro.median(numeric_only=True))
 
@@ -70,16 +73,6 @@ if __name__ == '__main__':
     pro_labels = pro[["SLE"]]
 
     disease = "SLE"
-    output_dir = "/work/sph-xutx/codes/immune/sle_models/naive_bayes/result"
+    output_dir = "/work/sph-xutx/codes/immune/sle_models/naive_bayes/result2"
 
-    train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease)
-
-#
-# #!/bin/bash
-# set -e
-# module load python/anaconda3/5.2.0
-# export PATH=/work/sph-xutx/.conda/envs/lgb/bin:$PATH
-# export CONDA_PREFIX=/work/sph-xutx/.conda/envs/lgb
-# python /work/sph-xutx/codes/immune/sle_models/naive_bayes/6.sph_naive_bayes.py
-
-# bsub -q short -n 40 -J sph_naive_bayes -o sph_naive_bayes.LOG -e sph_naive_bayes.ERR < sph_naive_bayes.sh
+    train_and_evaluate_naive_bayes(pro_data, pro_labels, output_dir, disease, test_size=0.3)
